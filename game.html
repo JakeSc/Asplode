@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<script src='/_ah/channel/jsapi'></script>
+		<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.4.2/jquery.min.js"></script>
+		<script>
+			/*
+			  TODO:
+				- Full screen
+				- Smarter bullet AI - swarm from the back
+			*/
+		    var gameKey = '{{ game_key }}',
+				me = '{{ me }}',
+				playerNum = {{ player_num }},
+				playerKey = '{{ player_key }}',
+				username = '{{ username }}',
+				token = '{{ token }}',
+				initialMessage = '{{ initial_message }}',
+				gameLink = '{{ game_link }}';
+
+			var shipID = '{{ ship_id }}',
+				c,
+				frameCount,
+				myScore,
+				scoreMultiplier,
+				myLives = 10,
+				numAvailableMines = 0,
+				mouse = {x:0, y:0},
+				myShipX,
+				myShipY,
+				enemyX,
+				enemyY,
+				myShipRadius,
+				myShipImage = new Image(),
+				bulletRadius,
+				myShipSpeedX,
+				myShipSpeedY,
+				starDriftSpeedX,
+				starDriftSpeedY,
+				colors = ['rgba(255, 51, 51, .75)', 'rgba(51, 255, 51, .75)', 'rgba(204, 204, 255, .9)'],
+					c_bulletColor = 2,
+				enemyBullets,
+				screenW = 800,
+				screenH = 600,
+				lastSentX,
+				lastSentY,
+				lastSentRadius,
+				myMines,
+				enemyMines = new Array(),
+				explosions = new Array(),
+				dt_refresh = 35,	//35
+				powersArray,
+				keyboardMode = true,
+				SHIP_START_RADIUS = 10,
+				MAX_SHIP_SPEED	= 8,
+				MAX_SHIP_RADIUS = 65,
+				MAX_BULLETS		 = 20
+				last = (new Date()).getTime()
+			;
+
+			var state = {
+				gameKey: '{{ game_key }}',
+				playerKey: '{{ player_key }}',
+				me: '{{ me }}',
+				lastMineSetTime: new Date().getTime() - 1000
+			};
+
+			var peerState = {};
+
+			openChannel = function() {
+			  var channel = new goog.appengine.Channel(token);
+			  var handler = {
+			    'onopen': onOpened,
+			    'onmessage': onMessage,
+			    'onerror': onError,
+			    'onclose': onClose
+			  };
+			  var socket = channel.open(handler);
+			  socket.onopen = onOpened;
+			  socket.onmessage = onMessage;
+			};
+
+			sendMessage = function(path, opt_param, responseFunction) {
+			    path += '?gamekey=' + state.gameKey;
+			    path += '&playerKey='+ state.playerKey;
+			    path += "&playerNum="+ playerNum;
+			    if (opt_param) {
+			      path += '&' + opt_param;
+			    }
+			    var xhr = new XMLHttpRequest();
+			   	if (typeof(responseFunction) == 'function') {
+			    	xhr.onreadystatechange = function() {
+			    		if (xhr.readyState == 4) responseFunction(xhr.responseText);
+			    	};
+			   	}
+			    xhr.open('POST', path, true);
+			    xhr.send();
+			};
+
+			onOpened = function() {
+				sendMessage('/opened');
+			};
+
+			onError = function() {
+				console.log("Channel error");
+			};
+
+			onClose = function() {
+				console.log("Channel close");
+			};
+
+			onMessage = function(m) {
+			// Incoming message
+				//
+				newState = JSON.parse(m.data);
+				
+				if (newState.peer != null) {
+					if (newState.peer == 'joined') {
+						$('#gameLink').css({ color: 'green' });
+					} else if (newState.peer == 'closed') {
+						$('#gameLink').css({ color: 'red' });
+					}
+				} else if (newState.mine != null) {
+					drawMine(newState.x, newState.y, true, true);
+					enemyMines.push(newState);
+				} else if (newState.hitMine != null) {
+					var mineIndex = newState.mineIndex;
+					if (myMines[mineIndex])
+						explosion(myMines[mineIndex].x, myMines[mineIndex].y);
+					
+					// Replace mine object with an empty hash.
+					// We do this so a mineIndex for this array will always point to the same location in the array.
+					myMines.splice(mineIndex, 1, {});
+				} else {
+					if (playerNum == 1) {
+						peerState.shipX = newState.user2X;
+						peerState.shipY = newState.user2Y;
+						peerState.shipRadius = newState.user2radius;
+					} else if (playerNum == 2) {
+						peerState.shipX = newState.user1X;
+						peerState.shipY = newState.user1Y;
+						peerState.shipRadius = newState.user1radius;
+					}
+				}
+				updateState();
+			};
+			
+			updateState = function() {
+				//console.log("Updated state:");
+				//console.log("\t peerState.shipX:"+ peerState.shipX);
+				//console.log("\t peerState.shipY:"+ peerState.shipY);
+				//console.log("\t peerState.shipRadius:"+ peerState.shipRadius);
+			};
+
+			function init() {
+				frameCount = 0;
+				myScore = 0;
+				scoreMultiplier = 1;
+				myShipX = 10;
+				myShipY = 10;
+				myShipImage.src = '/ship-blue.gif';
+				enemyX = 50;
+				enemyY = 50;
+				myShipRadius = SHIP_START_RADIUS;
+				bulletRadius = 5;
+				myShipSpeedX = 0;
+				myShipSpeedY = 0;
+				enemyBullets = [];
+				powersArray = new Array();
+				myMines = new Array();
+				numAvailableMines = 4;
+				starDriftSpeedX = 0.5;
+				starDriftSpeedY = 0.5;
+				
+				$('#score').html(myScore);
+				$('#lives').html(myLives);
+				$('#numMines').html(numAvailableMines);
+				$('#powers').html('');			// Clear all existing powers
+			}
+			$(function() {
+				c = $('#screen')[0].getContext('2d');
+				openChannel();
+				init();
+
+				setInterval(function() {
+					// Only send update if our position hasn't changed.
+					if (lastSentX != myShipX || lastSentY != myShipY || lastSentRadius != myShipRadius) {
+						sendMessage('/move', 'x='+ myShipX +'&y='+ myShipY +'&radius='+ myShipRadius);
+						lastSentX = myShipX;
+						lastSentY = myShipY;
+						lastSentRadius = myShipRadius;
+					}
+				}, 1000);
+				
+				return setInterval(run, dt_refresh);
+			});
+			function run() {
+				trace();
+				moveShip();
+				draw();
+				shootBullets();
+				frameCount++;
+				return;
+			}
+							
+			function moveShip() {
+				var oldX = myShipX, oldY = myShipY;
+				if (keyboardMode) {
+					myShipX += myShipSpeedX;
+					myShipY += myShipSpeedY;
+				} else {	// Mouse mode
+					/* No agility:
+							Ship moves to the average( average( average( shipLocation, mouseLocation ) ) )
+						 Agility:
+							Ship moves to the average( average( shipLocation, mouseLocation ) )
+						 Ultra-agility:
+							Ship moves to the average( shipLocation, mouseLocation )
+						*/
+					var mouseX = mouse.x - parseInt(myShipRadius/2);
+					var mouseY = mouse.y - parseInt(myShipRadius/2);
+					if (powersArray['ultra-agility']) {
+						myShipX = (myShipX + mouseX) / 2 - 10 + myShipRadius/4;
+						myShipY = (myShipY + mouseY) / 2 - 20 + myShipRadius/4;
+					} else if (powersArray['agility']) {
+					myShipX = ((myShipX + mouseX) / 4 + myShipX/2) + myShipRadius/5 - 7;
+						myShipY = ((myShipY + mouseY) / 4 + myShipY/2) + myShipRadius/5 - 12;
+					} else {
+						myShipX = ((myShipX + mouseX) / 8 + myShipX/4) + myShipX/2 + myShipRadius/10 - 3;
+						myShipY = ((myShipY + mouseY) / 8 + myShipY/4) + myShipY/2 + myShipRadius/11 - 5;
+					}
+					myShipX = Math.floor(myShipX);
+					myShipY = Math.floor(myShipY);
+				}
+				// Keep ship within screen
+				if (myShipX > screenW) {
+					myShipX = screenW;
+					myShipSpeedX = 0;
+				}
+				if (myShipY > screenH) {
+					myShipY = screenH;
+					myShipSpeedY = 0;
+				}
+				if (myShipX < 0) {
+					myShipX = 0;
+					myShipSpeedX = 0;
+				}
+				if (myShipY < 0) {
+					myShipY = 0;
+					myShipSpeedY = 0;
+				}
+				
+			}
+
+			function trace() {
+				$('#mouseX').html(mouse.x);
+				$('#mouseY').html(mouse.y);
+				$('#shipX').html(myShipX);
+				$('#shipY').html(myShipY);
+				$('#shipSpeedX').html(myShipSpeedX);
+				$('#shipSpeedY').html(myShipSpeedY);
+				$('#numEnemyBullets').html(enemyBullets.length);
+			}
+			
+			$(document).mousemove(
+				function(e){ mouse = getCursorPosition(e); }
+			);
+			
+			$(document).keypress(
+				function(evt) {
+					var speedIncrement = 8;
+					evt = (evt) ? evt : ((window.event) ? event : null);
+					if (evt) {
+						var keyCode = evt.keyCode || evt.which;
+						switch (keyCode) {
+							case 37:
+								myShipSpeedX -= speedIncrement;
+								break;		
+							case 38:
+								myShipSpeedY -= speedIncrement;
+								break;		
+							case 39:
+								myShipSpeedX += speedIncrement;
+								break;		
+							case 40:
+								myShipSpeedY += speedIncrement;
+								break;
+							case 107: // k
+								$('#modeSelector').click();
+								break;
+							case 112: // p
+								pause();
+								break;
+						}
+						if (myShipSpeedX > MAX_SHIP_SPEED)
+							myShipSpeedX = MAX_SHIP_SPEED;
+						if (myShipSpeedY > MAX_SHIP_SPEED)
+							myShipSpeedY = MAX_SHIP_SPEED;
+						if (myShipSpeedX < 0-MAX_SHIP_SPEED)
+							myShipSpeedX = 0-MAX_SHIP_SPEED;
+						if (myShipSpeedY < 0-MAX_SHIP_SPEED)
+							myShipSpeedY = 0-MAX_SHIP_SPEED;
+						evt.preventDefault();
+					}
+				}
+			);
+			function draw() {
+				c.clearRect(0, 0, screenW, screenH);
+				drawBackground();
+				draw_ship(myShipX, myShipY, 0, myShipRadius, true); // Me
+				
+				draw_ship(enemyX, enemyY, 1, 10, false); // Enemy
+				if (peerState.shipX != null && peerState.shipY != null) {
+					var peerRadius = peerState.shipRadius || 10;
+					draw_ship(parseInt(peerState.shipX), parseInt(peerState.shipY), 1, peerRadius, false); // Peer
+				}
+				
+				drawMines();
+				drawExplosions();
+				advanceBullets();
+			}
+			
+			
+			function drawMines() {
+				$.each(myMines, function(key, value) {
+					//$('#mineList').append($('<div>'+ key +' ('+ value.x +', '+ value.y +') - '+ value.solid +'</div>'));
+					if (value.x != null && value.y != null)
+						drawMine(value.x, value.y, value.solid, false);
+				});
+				$.each(enemyMines, function(key, value) {
+					if (value) {
+						drawMine(value.x, value.y, true, true);
+						detectMineCollision(key);
+					}
+				});
+			}
+			
+			
+			function detectMineCollision(index) {
+				var mine = enemyMines[index];
+				if (typeof(mine) == 'undefined')
+					return false;
+				if (bulletHit(mine)) {
+					flashScreen();
+					if (!growShip()) {
+						reset();
+						decrementLives();
+					}
+					enemyMines.splice(index, 1);
+					sendMessage('/hitMine', 'index='+ mine.remoteIndex);
+				}
+			}
+			
+			
+			function drawExplosions() {
+				$.each(explosions, function(key, value) {
+					//if 
+				});
+			}
+			
+			
+			function advanceBullets() {
+				var seekOffset = (powersArray['radar-jammer']) ? 1.5 * myShipRadius : 0;
+				for (var i=0; i < enemyBullets.length; i++) {
+					c.fillStyle = enemyBullets[i].color; //colors[c_bulletColor];
+					c.beginPath();
+					c.arc(enemyBullets[i].x, enemyBullets[i].y, bulletRadius, 0, Math.PI*2, true);
+					c.closePath();
+					c.fill();
+					
+					switch (enemyBullets[i].intelligence) {
+					case 0: // Simply flies straight
+						enemyBullets[i].x += enemyBullets[i].speed * enemyBullets[i].initialX;
+						enemyBullets[i].y += enemyBullets[i].speed * enemyBullets[i].initialY;
+						break;
+					case 1: // Seeks my ship
+						if (Math.abs(enemyBullets[i].x - myShipX + seekOffset) > 10 && enemyBullets[i].x < myShipX)
+							enemyBullets[i].x += enemyBullets[i].speed;
+						else if ((enemyBullets[i].x - myShipX) > 10)
+							enemyBullets[i].x -= enemyBullets[i].speed;
+						else
+							if (enemyBullets[i].y == myShipY)
+								enemyBullets.splice(i, 1);
+						if (Math.abs(enemyBullets[i].y - myShipY + seekOffset) > 10 && enemyBullets[i].y < myShipY)
+							enemyBullets[i].y += enemyBullets[i].speed;
+						else if (enemyBullets[i].y > myShipY)
+							enemyBullets[i].y -=	enemyBullets[i].speed;
+						break;
+					}
+					
+					detectCollisions(i);
+				}
+				return;
+			}
+			function detectCollisions(bulletIndex) {
+				if (typeof(enemyBullets[bulletIndex]) == 'undefined')
+					return;
+				var bullet = enemyBullets[bulletIndex];
+				if (bulletHit(bullet)) {
+					if (bullet.color == 'red') {
+						flashScreen();
+						if (!growShip()) {
+							decrementLives();
+							reset();
+						}
+					} else if (bullet.color == 'green') {
+						incrementScore();
+						incrementMines();
+						if (!shrinkShip()) {
+							// growEnemyShip();
+						}
+					}
+					enemyBullets.splice(bulletIndex, 1);
+				}
+				return;
+			}
+			
+			function bulletHit(bullet) {
+				var dangerZone = myShipRadius + bulletRadius - 4;
+				dangerZone = (dangerZone >= 2) ? dangerZone : 2;
+				return (Math.abs(bullet.x - myShipX) < dangerZone && Math.abs(bullet.y - myShipY) < dangerZone) // Hit
+			}
+
+			function growShip() {
+			/* Returns true if the ship grew, and false otherwise
+				*/
+				if (myShipRadius < MAX_SHIP_RADIUS) {
+					myShipRadius += 6;
+					// Change star drift direction, increase speed
+						starsDriftRight = !Math.round(Math.random()); // Random bool
+						starsDriftUp = !Math.round(Math.random());
+						starDriftSpeedX += Math.random() + 1;
+						starDriftSpeedY += Math.random() + 1;
+					return true;
+				} else
+					return false;
+			}
+			
+			function shrinkShip() {
+			/* Returns true if the ship shrunk, false otherwise
+				*/
+				if (myShipRadius > SHIP_START_RADIUS)
+					myShipRadius -= 2;
+				starDriftSpeedX -= (starDriftSpeedX > 1) ? Math.random() : 0;
+				starDriftSpeedY -= (starDriftSpeedY > 1) ? Math.random() : 0;
+			}
+			
+			function decrementLives() {
+				myLives--;
+				$('#lives').html(myLives);
+			}
+			
+			function incrementScore() {
+				c.fillStyle = '#3C3';
+				c.fillRect(738, 5, 35, 25);
+				myScore += 10*scoreMultiplier;
+				$('#score').html(myScore);
+				checkPowers();
+			}
+			
+			function incrementMines() {
+				numAvailableMines++;
+				$('#numMines').html(numAvailableMines);
+			}
+			
+			function checkPowers() {
+			/* Checks score and grants the necessary powers
+				*/
+				if (myScore >= 10 && !powersArray['agility'])
+					grantPower('agility');
+				if (myScore >= 40 && !powersArray['2x'])
+					grantPower('2x');
+				if (myScore >= 100 && !powersArray['radar-jammer'])
+					grantPower('radar-jammer');
+				if (myScore >= 130 && !powersArray['3x'])
+					grantPower('3x');
+				if (myScore >= 180 && !powersArray['ultra-agility'])
+					grantPower('ultra-agility');
+				if (myScore >= 250 && !powersArray['4x'])
+					grantPower('4x');
+			}
+			
+			function grantPower(powerName) {
+			/* Grants the provided power, returning true if that happened or false if not.
+				*/
+				if (powersArray[powerName])
+					return false;
+				flashScreen();
+				powersArray[powerName] = true;
+				var powerElement = $('<div id="'+ powerName +'Power" class="power">'+ powerName +'</div>');
+				powerElement.css({
+					position: 'absolute',
+					top: screenH/2-20,
+					left: '-5',
+					'font-size': '25pt'
+				}).animate({
+					left: screenW/2-45
+				}, 200);
+				$('#canvasContainer').append(powerElement);
+				setTimeout(
+					function() {
+						powerElement.animate({
+							top: screenH-15,
+							left: screenW-40,
+							'font-size': '12pt'
+						}, function() {
+							powerElement.css({
+								position: 'relative',
+								top: null,
+								left: null
+							});
+							$('#powers').append(powerElement);
+						});
+					}, 1000
+				);
+				
+				// Now test to see if we should update the scoreMultiplier
+				var tempMultiplier, strTemp;
+				strTemp = powerName.match(/^\d+x$/);	// Match 20x, for example
+				if (strTemp && strTemp[0]) {
+					tempMultiplier = parseInt(strTemp[0].substring(0, strTemp[0].lastIndexOf('x')));	// Get the number before the x, like 3x
+					if (tempMultiplier > scoreMultiplier)
+						scoreMultiplier = tempMultiplier;
+				}
+				return;
+			}
+			
+			function shootBullets() {;
+				if (frameCount % 40 == 0) {
+					var newBullet = {
+						x: enemyX,
+						y: enemyY,
+						speed: Math.random()*2 + 2,
+						color: (frameCount/40 % 4 == 0) ? 'green' : 'red',
+						intelligence: Math.floor(Math.random()*2),
+						initialX: (enemyX <= myShipX) ? 1 : -1,
+						initialY: (enemyY <= myShipY) ? 1 : -1
+					};
+					enemyBullets.push(newBullet);
+					
+					if (enemyBullets.length > MAX_BULLETS)
+						enemyBullets.splice(0, 1);
+				}
+			}
+			
+			function draw_ship(x, y, colorIndex, radius, me) {
+				var redness = Math.floor((radius/MAX_SHIP_RADIUS)*204+51);
+				var greenness = 255-redness;
+			 	c.fillStyle = 'rgb('+ redness +', '+ greenness +', 51)'; colors[colorIndex];
+			 	c.strokeStyle = 'white';
+			 	c.beginPath();
+			 	c.arc(x, y, radius, 0, Math.PI*2, true);
+			 	c.closePath();
+			 	c.fill();
+			 	if (me) {
+			 		c.stroke();
+			 	}
+				// if (me) {
+				// 	//console.log(myShipImage.)
+				// 	c.drawImage(myShipImage, x, y, parseInt(radius*myShipImage.width/myShipImage.height), radius);
+				// } else {
+				// 	c.fillStyle = 'rgb('+ redness +', '+ greenness +', 51)'; //colors[colorIndex];
+				// 	c.strokeStyle = 'white';
+				// 	c.beginPath();
+				// 	c.arc(x, y, radius, 0, Math.PI*2, true);
+				// 	c.closePath();
+				// 	c.fill();
+				// 	c.stroke();
+				// }
+				return;
+			}
+			
+			function explosion(x, y, radius) {
+				var color = "#FF8000";
+				radius = (radius || Math.random()*20+30); 
+				c.fillStyle = color;
+				c.strokeStyle = '#FF00FF';
+				c.beginPath();
+				c.arc(x, y, radius, 0, Math.PI*2, true);
+				c.closePath();
+				c.fill();
+				c.stroke();
+				return;
+			}
+			
+			var numStars = 15,
+					stars = [],
+					starsDriftRight = true, starsDriftUp = false;
+			function drawBackground() {
+				if (stars.length == 0)	// If stars don't exist, make them
+					for (var i=0; i < numStars; i++)
+						stars.push({
+							x: randomX(), 
+							y: randomY(),
+							r: Math.floor( 2 + Math.abs(4*Math.sin(i)) ),
+							opacity: Math.random() * 0.8 + 0.1									// Opacity between (0.10, 0.90)
+						});
+				else {	// If stars exists
+					for (var i=0; i < numStars; i++) {
+						c.fillStyle = 'rgba(120, 120, 120, '+ stars[i].opacity +')';
+						c.beginPath();
+						c.arc(stars[i].x, stars[i].y, stars[i].r, 0, Math.PI*2, true);
+						c.closePath();
+						c.fill();
+						if (starsDriftRight) {
+							if (stars[i].x < (screenW + 300))
+								stars[i].x += starDriftSpeedX;
+							else
+								stars[i].x = Math.floor( Math.random()*300 ) - 300;		 // Anywhere within (-300, 0)
+						} else {	// Drift left
+							if (stars[i].x > (0 - 300))
+								stars[i].x -= starDriftSpeedX;
+							else
+								stars[i].x = Math.floor( Math.random()*300 ) + screenW; // Within (screenW, screenW+300)
+						}
+						if (starsDriftUp) {
+							if (stars[i].y > (0 - 300))
+								stars[i].y -= starDriftSpeedY;
+							else
+								stars[i].y = Math.floor( Math.random()*300 ) + screenH; // Anywhere between screenH and screenH+300
+						} else {	// Drift down
+							if (stars[i].y < (screenH + 300))
+								stars[i].y += starDriftSpeedY;
+							else
+								stars[i].y = Math.floor( Math.random()*300 ) - 300;		 // Anywhere between -300 and 0
+						}
+					}
+				}
+			}
+			
+			function randomX() {
+				// Anywhere within +-300px of the screen
+				return Math.floor( Math.random()*(screenW+600) ) - 300;
+			}
+			function randomY() {
+				// Anywhere within +-300px of the screen
+				return Math.floor( Math.random()*(screenH+600) ) - 300;
+			}
+			
+			function pause() {
+				
+			}
+			
+			function reset() {
+				init();
+			}
+			
+			function flashScreen() {
+				c.fillStyle = '#FFF';
+				c.fillRect(0, 0, 800, 600);
+			}
+			
+			function getCursorPosition(e) {
+					e = e || window.event;
+					var cursor = {x:0, y:0};
+					if (e.pageX || e.pageY) {
+							cursor.x = e.pageX;
+							cursor.y = e.pageY;
+					}
+					else {
+							cursor.x = e.clientX +
+									(document.documentElement.scrollLeft ||
+									document.body.scrollLeft) -
+									document.documentElement.clientLeft;
+							cursor.y = e.clientY +
+									(document.documentElement.scrollTop ||
+									document.body.scrollTop) -
+									document.documentElement.clientTop;
+					}
+					return cursor;
+			}
+			
+			$(function() {
+				if (!window.console) window.console = {};
+				if (!window.console.log) window.console.log = function() {};
+				
+				setModeOptions();
+				$('#modeSelector').click(function() {
+					setModeOptions();
+				});			
+
+				$('#screen').click(function(event) {
+					setMine(event.pageX, event.pageY);
+				});
+			});
+			
+			
+			function setMine(xPos, yPos) {
+				var now = new Date().getTime();
+				if (now - state.lastMineSetTime < 1000) {
+					return false;
+				}
+				if (numAvailableMines <= 0) {
+					return false;
+				}
+				state.lastMineSetTime = now;
+				var mineIndex = myMines.length;
+				var cellX = parseInt((xPos-20) / 20) * 20,
+					cellY = parseInt((yPos-20) / 20) * 20;
+				myMines.push({
+					x: cellX,
+					y: cellY,
+					solid: false
+				});
+				sendMessage('/setMine', 'x='+ cellX +'&y='+ cellY +'&index='+ mineIndex, function(responseText) {
+					var responseArr = responseText.split(' ', 2);
+					if (responseArr[1] == '1') {
+						myMines[mineIndex].solid = true;
+						numAvailableMines--;
+						$('#numMines').html(numAvailableMines);
+					} else {
+						// Remove mine from list
+						myMines.splice(mineIndex, 1);
+					}
+				});
+				return true;
+			}
+			
+			
+			function drawMine(xPos, yPos, solid, enemy) {
+				if (enemy == true) {
+					c.fillStyle = 'rgba(255, 100, 130, 1.0)';
+					c.strokeStyle = '#777777';
+				} else {
+					c.fillStyle = (solid) ? 'rgba(50, 90, 50, 0.5)' : 'rgba(193, 222, 162, 0.2)';
+					c.strokeStyle = '#777777';
+				}
+				c.beginPath();
+				c.arc(xPos, yPos, 10, 0, Math.PI*2, true);
+				c.closePath();
+				c.fill();
+				c.stroke();
+			}
+			
+			
+			function setModeOptions() {
+				if (keyboardMode) {
+					$('#keyboardModeIndicator').slideUp();
+					$('#mouseModeIndicator').slideDown();
+					keyboardMode = false;
+				} else {
+					$('#keyboardModeIndicator').slideDown();
+					$('#mouseModeIndicator').slideUp();
+					keyboardMode = true;
+				}
+			}
+			var updater = {
+				errorSleepTime: 500,
+				cursor: null,
+				
+				poll: function() {
+						var args = {};
+						if (updater.cursor) args.cursor = updater.cursor;
+						$.ajax({url: "update", type: "POST", dataType: "text",
+										data: $.param(args), success: updater.onSuccess,
+										error: updater.onError});
+				},
+				onSuccess: function(response) {
+						try {
+							console.log('Response: '+ response);
+							updater.newMessages(eval("(" + response + ")"));
+						} catch (e) {
+								updater.onError();
+								return;
+						}
+						updater.errorSleepTime = 500;
+						window.setTimeout(updater.poll, 0);
+				},
+				newMessages: function(response) {
+						if (!response.messages) return;
+						updater.cursor = response.cursor;
+						var messages = response.messages;
+						updater.cursor = messages[messages.length - 1].id;
+						console.log(messages.length, "new messages, cursor:", updater.cursor);
+						for (var i = 0; i < messages.length; i++) {
+								//updater.showMessage(messages[i]);
+								console.log("Display message "+ i)
+						}
+				},
+				onError: function(response) {
+						updater.errorSleepTime *= 2;
+						console.log("Poll error; sleeping for", updater.errorSleepTime, "ms");
+						window.setTimeout(updater.poll, updater.errorSleepTime);
+				}
+			}
+		</script>
+		<style>
+			body {
+				font-family: Tahoma, Arial, sans-serif;
+			}
+			#screen {
+				border: 10px dotted BurlyWood;
+				float: left;
+				background-color: black;
+			}
+			#canvasContainer {
+				position: relative;
+				float: left;
+				cursor: default;
+			}
+			#stats {
+				position: absolute;
+				top: 11px;
+				left: 654px;
+				height: 75px;
+				width: 150px;
+				padding-left: 5px;
+				border-left: 1px dotted #333;
+				border-bottom: 1px dotted #333;
+				font-size: 19pt;
+				font-family: Times New Roman, serif;
+				text-shadow: 2px 2px 1px #777;
+			}
+			#stats #score, #stats #lives {
+				display: inline;
+				color: #999;
+			}
+			#powers {
+				position: absolute;
+				right: 12px;
+				bottom: 12px;
+				color: #FFF;
+			}
+				.power {
+					float: left;
+					margin-left: 10px;
+					color: #FFF;
+				}
+			#optionsContainer {
+				float: left;
+				width: 160px;
+				margin-left: 10px;
+				cursor: default;
+			}
+				#optionsContainer .indicator {
+					font-size: 19pt;
+					font-family: Times New Roman, serif;
+					text-align: center;
+					text-shadow: 2px 2px 1px #777;
+					border: 1px solid #333;
+				}
+				#modeSelector {
+					height: 20px;
+					background-color: #000;
+					cursor: pointer;
+				}
+				#modeSelector:hover {
+					background-color: #066;
+				}
+				#keyboardModeIndicator {
+					height: 50px;
+					background-color: #9FC;
+				}
+				#mouseModeIndicator {
+					height: 50px;
+					background-color: #9CF;
+				}
+				
+				#debug {
+					font-size: 10pt;
+				}
+			.clear { clear: both; }
+			#copyright {
+				text-align: center;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="gameLink" style="color: red;">
+			Game link: <a href="{{ game_link }}">{{ game_link }}</a>
+		</div>
+		<div id="canvasContainer">
+			<div id="stats">
+				SCORE <div id="score"></div>
+				<br />
+				LIVES <div id="lives"></div>
+			</div>
+			<div id="powers">
+			</div>
+			<canvas id="screen" height="600" width="800">
+			</canvas>
+		</div>
+		<div id="optionsContainer">
+			<div id="keyboardModeIndicator" class="indicator">
+				KEYBOARD
+			</div>
+			<div id="modeSelector">
+			</div>
+			<div id="mouseModeIndicator" class="indicator">
+				MOUSE
+			</div>
+			<div id="debug">
+				Mouse X: <span id="mouseX"></span>,
+				Mouse Y: <span id="mouseY"></span><br />
+				Ship X: <span id="shipX"></span>,
+				Ship Y: <span id="shipY"></span><br />
+				Ship speed X: <span id="shipSpeedX"></span>,
+				Ship speed Y: <span id="shipSpeedY"></span><br />
+				Num. enemy bullets: <span id="numEnemyBullets"></span><br />
+			</div>
+			<div id="mineList">
+				Mines left:
+				<span id="numMines"></span>
+			</div>
+		</div>
+		<img src="/ship-blue.gif" style="display: none; visibility: hidden;" id="shipOne" />
+		<img src="/ship-blue.gif" style="display: none; visibility: hidden;" id="shipTwo" />
+		<div class="clear"></div>
+		<div id="copyright">
+			&copy; 2010 Jake Schwartz
+		</div>
+	</body>
+</html>

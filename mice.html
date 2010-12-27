@@ -1,0 +1,189 @@
+<html>
+<head>
+  <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.4.2/jquery.min.js"></script>
+  <script src="http://localhost:8000/socket.io/socket.io.js"></script>
+  <script>
+    //io.setPath('/js/socket/');
+
+    function ratelimit(fn, ms) {
+      var last = (new Date()).getTime();
+      return (function() {
+        var now = (new Date()).getTime();
+        if (now - last > ms) {
+          last = now;
+          fn.apply(null, arguments);
+        }
+      });
+    }
+
+    function move(mouse){
+      if(disabled == false){                               
+        if($('#mouse_'+mouse['id']).length == 0) {
+          $('body').append('<span class="mouse" id="mouse_'+mouse['id']+'"><span style="display:none;" class="chat"/></span>');
+        }
+        $('#mouse_'+mouse['id']).css({
+          'left' : (($(window).width() - mouse['w']) / 2 + mouse['x']) + 'px',
+          'top' : mouse['y'] + 'px'
+        })
+      }
+    };
+
+    function speak(data){
+      clearTimeout(timeouts[data['id']]);
+      $('#mouse_'+data['id']+' img').remove();
+      $('#mouse_'+data['id']).append('<img src="http://www.gravatar.com/avatar/' + data['email'] + '?s=20" />');
+
+      if(data['text'] == '') {
+        return $('#mouse_'+data['id']+' .chat').hide();
+      }
+
+      $('#mouse_'+data['id']+' .chat').show().html(data['text']);
+      timeouts[data['id']] = setTimeout("$('#mouse_"+data['id']+" .chat').hide()", 5000)
+    };
+
+    function preview(data){
+      clearTimeout(timeouts[data['preview']]);
+      $('#preview img').remove();
+      $('#preview').append('<img src="http://www.gravatar.com/avatar/' + data['email'] + '?s=20" />');
+
+      if(data['text'] == '') {
+        return $('#preview .chat').hide();
+      }
+
+      $('#preview').show();
+      $('#preview .chat').show().html(data['text']);
+      timeouts['preview'] = setTimeout("$('#preview').hide()", 5000)
+    };
+
+    $(document).ready(function(){
+      $('#mouse_toggle a').toggle(function(){
+        $('.mouse').hide();
+        disabled = true;
+        $(this).html('enable');
+      }, function(){
+        $('.mouse').show();
+        disabled = false;
+        $(this).html('disable');
+      });
+
+      $('form#chat input#email').focus();
+      $('form#chat').submit(function(){
+        if($('form#chat input#email').val() == '') {
+          return alert('You forgot to fill in your e-mail address.');
+        }
+
+        socket.send(JSON.stringify({
+          action: 'speak',
+          email: $('form#chat input#email').val(),
+          text: $('form#chat input#text').val().substring(0, 140)
+        }));
+
+        email: $('form#chat input#text').val('')
+        return false;
+      })
+
+      $('body').append('<span id="preview"><span style="display:none;" class="chat"/></span>');
+    });
+
+    $(document).mousemove(
+      ratelimit(function(e){
+        console.log('move');
+        socket.send(JSON.stringify({
+          action: 'move',
+          x: e.pageX,
+          y: e.pageY,
+          w: $(window).width(),
+          h: $(window).height()
+        }))
+
+        $('#preview').css({
+          'left' : e.pageX + 'px',
+          'top' : e.pageY + 'px'
+        })
+      }, 40)
+    );
+
+    var disabled = false,
+        socket = new io.Socket('localhost'),
+        timeouts = {};
+
+    if(socket.connect()){
+      socket.on('message', function(data){
+        data = JSON.parse(data);
+        if(data['action'] == 'close'){
+          $('#mouse_'+data['id']).remove();
+        } else if(data['action'] == 'speak') {
+          if(data['id']) {
+            speak(data);
+          } else {
+            preview(data);
+          }
+        } else if(data['action'] == 'move'){
+          move(data);
+        };
+      });
+    };
+  </script>
+  <style>
+    .mouse, #preview{
+      position: absolute;
+      background-repeat: no-repeat;
+      height: 42px;
+      min-width: 32px;
+      z-index: 100;
+    }
+
+    .mouse{
+      background-image: url('../assets/explosion-small.gif');
+    }
+
+    span.chat{
+      -moz-border-radius:5px;
+      -webkit-border-radius:5px;
+      border-radius:5px;
+      background-color:#222;
+      box-shadow:0 1px 0 #fff;
+      color:#fff;
+      font-size: 12px;
+      margin: 0 0 0 15px;
+      display: block;
+      opacity: 0.75;
+      font-size: 12px;
+      line-height: 16px;
+      padding: 2px 5px;
+      float:right;
+    }
+
+    span.mouse img, span#preview img{
+      padding: 0 5px;
+      float:left;
+      margin: 0 -15px 0 15px;
+      width: 20px;
+      height: 20px;
+    }
+
+
+    form
+    {  
+      margin: 0px 0px 0px -10px;
+      width:470px;
+    }
+
+    form#chat input{
+      width: 185px;
+      border:0;
+      padding:10px;
+      margin:10px;
+      -moz-border-radius:5px;
+      -moz-box-shadow:0 1px 0 #fff;
+      -webkit-border-radius:5px;
+      -webkit-box-shadow:0 1px 0 #fff;
+      border: 5px #bbb solid;
+      
+    }
+  </style>
+</head>
+<body>
+
+</body>
+</html>
